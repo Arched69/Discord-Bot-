@@ -1,98 +1,149 @@
+import os
 import discord
-from discord.ext import commands
 import requests
 import random
+from discord.ext import commands, tasks
+from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
-import io
-import openai
+from io import BytesIO
 
-# Setup bot with intents
-intents = discord.Intents.default()
-intents.members = True
+# Load environment variables
+TOKEN = os.getenv("DISCORD_TOKEN")
+NEWS_CHANNEL_ID = int(os.getenv("NEWS_CHANNEL_ID"))
+
+# Set up bot
+intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# OpenAI API Key (Replace with your key)
-OPENAI_API_KEY = "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"
-openai.api_key = OPENAI_API_KEY
+# Store image generation limits
+image_limits = {}
 
+# Auto Slowmode
 @bot.event
-async def on_ready():
-    print(f'Logged in as {bot.user}')
+async def on_message(message):
+    if message.channel.id == NEWS_CHANNEL_ID:
+        await message.channel.edit(slowmode_delay=10)
+    await bot.process_commands(message)
 
-# ✅ Auto Slowmode (10s on all channels)
-@bot.command()
-@commands.has_permissions(manage_channels=True)
-async def slowmode(ctx, seconds: int = 6):
-    await ctx.channel.edit(slowmode_delay=seconds)
-    await ctx.send(f"Slowmode set to {seconds} seconds.")
-
-# ✅ DM New Members with Avatar & Username
+# Welcome DM with Avatar Image
 @bot.event
 async def on_member_join(member):
-    try:
-        avatar_url = member.avatar.url if member.avatar else member.default_avatar.url
-        response = requests.get(avatar_url)
-        avatar = Image.open(io.BytesIO(response.content)).convert("RGBA").resize((100, 100))
+    avatar_url = member.avatar.url if member.avatar else member.default_avatar.url
+    username = member.name
 
-        img = Image.new("RGB", (400, 200), (30, 30, 30))
-        draw = ImageDraw.Draw(img)
-        font = ImageFont.truetype("arial.ttf", 30)
-        draw.text((150, 75), f"Welcome, {member.name}!", (255, 255, 255), font=font)
-        img.paste(avatar, (20, 50), avatar)
+    response = requests.get(avatar_url)
+    avatar = Image.open(BytesIO(response.content)).resize((100, 100))
+    
+    base = Image.new("RGB", (400, 200), (30, 30, 30))
+    draw = ImageDraw.Draw(base)
+    font = ImageFont.load_default()
+    
+    draw.text((120, 80), f"Welcome {username}!", fill="white", font=font)
+    base.paste(avatar, (10, 50))
+    
+    img_buffer = BytesIO()
+    base.save(img_buffer, format="PNG")
+    img_buffer.seek(0)
+    
+    await member.send("Welcome to the server!", file=discord.File(img_buffer, filename="welcome.png"))
 
-        img_path = "welcome.png"
-        img.save(img_path)
-
-        await member.send(f"Welcome to {member.guild.name}, {member.mention}!", file=discord.File(img_path))
-    except Exception as e:
-        print(f"Error sending DM: {e}")
-
-# ✅ Fun Games
+# Fun Games
 @bot.command()
-async def coinflip(ctx):
-    await ctx.send(random.choice(["Heads", "Tails"]))
+async def roll(ctx):
+    await ctx.send(f"🎲 You rolled: {random.randint(1, 6)}")
 
-# ✅ Pokémon Info
 @bot.command()
-async def pokemon(ctx, name):
-    response = requests.get(f"https://pokeapi.co/api/v2/pokemon/{name.lower()}")
+async def flip(ctx):
+    await ctx.send(f"🪙 {random.choice(['Heads', 'Tails'])}")
+
+# Pokémon Info Command
+@bot.command()
+async def pokemon(ctx, name: str):
+    url = f"https://pokeapi.co/api/v2/pokemon/{name.lower()}"
+    response = requests.get(url)
     if response.status_code == 200:
         data = response.json()
-        types = ', '.join(t['type']['name'] for t in data['types'])
-        await ctx.send(f"**{data['name'].title()}** - ID: {data['id']}\nType: {types}")
+        await ctx.send(f"**{data['name'].capitalize()}**\nHeight: {data['height']}\nWeight: {data['weight']}")
     else:
         await ctx.send("Pokémon not found!")
 
-# ✅ Anime Quotes
-anime_quotes = [
-    "Fear is freedom! Control is liberty! - Satsuki Kiryuuin",
-    "A lesson without pain is meaningless. - Edward Elric",
-]
+# Anime Quotes
 @bot.command()
 async def animequote(ctx):
-    await ctx.send(random.choice(anime_quotes))
+    response = requests.get("https://animechan.xyz/api/random")
+    if response.status_code == 200:
+        data = response.json()
+        await ctx.send(f"**{data['quote']}**\n- {data['character']} ({data['anime']})")
+    else:
+        await ctx.send("Couldn't fetch a quote.")
 
-# ✅ Meme Generator
+# Anime Search & Character Info
+@bot.command()
+async def anime(ctx, *, query: str):
+    response = requests.get(f"https://api.jikan.moe/v4/anime?q={query}")
+    if response.status_code == 200:
+        data = response.json()["data"][0]
+        await ctx.send(f"**{data['title']}**\n{data['url']}")
+    else:
+        await ctx.send("Anime not found!")
+
+@bot.command()
+async def character(ctx, *, name: str):
+    response = requests.get(f"https://api.jikan.moe/v4/characters?q={name}")
+    if response.status_code == 200:
+        data = response.json()["data"][0]
+        await ctx.send(f"**{data['name']}**\n{data['url']}")
+    else:
+        await ctx.send("Character not found!")
+
+# Meme Generator
 @bot.command()
 async def meme(ctx):
-    meme_url = "https://meme-api.com/gimme"
-    response = requests.get(meme_url)
+    response = requests.get("https://meme-api.com/gimme")
     if response.status_code == 200:
-        await ctx.send(response.json()["url"])
+        data = response.json()
+        await ctx.send(data["url"])
     else:
-        await ctx.send("Couldn't fetch a meme!")
+        await ctx.send("Couldn't fetch a meme.")
 
-# ✅ AI Image Generation ("Imagine")
+# AI Image Generation (Limited to 20 per day)
 @bot.command()
-async def imagine(ctx, *, prompt):
-    try:
-        await ctx.send("Generating your image, please wait...")
-        response = openai.Image.create(prompt=prompt, n=1, size="1024x1024")
-        await ctx.send(f"Here is your image:\n{response['data'][0]['url']}")
-    except Exception as e:
-        await ctx.send("Sorry, I couldn't generate the image.")
-        print(f"Error: {e}")
+async def imagine(ctx, *, prompt: str):
+    user_id = ctx.author.id
+    today = datetime.now().date()
 
-# ✅ Run Bot
-bot.run("MTMzNTk3ODI0Nzk5MjkwNTc4Mg.G87MdH.gcBFh554IkV42xrw3KEaz1x3NAmGRu6nV0fdIA")
-  
+    if user_id in image_limits and image_limits[user_id]['date'] == today:
+        if image_limits[user_id]['count'] >= 20:
+            await ctx.send("⚠️ You’ve reached your daily limit of 20 images!")
+            return
+        image_limits[user_id]['count'] += 1
+    else:
+        image_limits[user_id] = {'date': today, 'count': 1}
+
+    response = requests.post(
+        "https://api.openai.com/v1/images/generations",
+        headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"},
+        json={"prompt": prompt, "n": 1, "size": "1024x1024"}
+    )
+    if response.status_code == 200:
+        data = response.json()
+        await ctx.send(data["data"][0]["url"])
+    else:
+        await ctx.send("Failed to generate image.")
+
+# Anime News (Crunchyroll & ANN)
+@tasks.loop(hours=1)
+async def anime_news():
+    channel = bot.get_channel(NEWS_CHANNEL_ID)
+    if channel:
+        crunchyroll_url = "https://www.crunchyroll.com/news/rss"
+        ann_url = "https://www.animenewsnetwork.com/news/rss.xml"
+
+        await channel.send(f"📰 **Latest Anime News:**\nCrunchyroll: <{crunchyroll_url}>\nAnime News Network: <{ann_url}>")
+
+@bot.event
+async def on_ready():
+    print(f"✅ Logged in as {bot.user}")
+    anime_news.start()
+
+bot.run(TOKEN)
